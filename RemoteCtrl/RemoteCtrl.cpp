@@ -5,6 +5,7 @@
 #include "framework.h"
 #include "RemoteCtrl.h"
 #include "ServerSocket.h"
+#include "LockDialog.h"
 #include <direct.h>
 #include <io.h>
 #include <list>
@@ -245,6 +246,71 @@ int MouseEvent() {
 	return 0;
 }
 
+CLockDialog dlg;
+
+unsigned __stdcall threadLockDlg(void* arg) {
+	TRACE("%s(%d):%d\n",__FUNCTION__,__LINE__,GetCurrentThreadId());
+
+	dlg.Create(IDD_DIALOG_INFO, NULL);
+	dlg.ShowWindow(SW_SHOW);
+	// 遮蔽后台窗口
+	CRect rect;
+	rect.left = 0;
+	rect.top = 0;
+	rect.right = GetSystemMetrics(SM_CXFULLSCREEN);
+	rect.bottom = GetSystemMetrics(SM_CYFULLSCREEN);
+	rect.bottom *= 1.08;
+	dlg.MoveWindow(rect);
+
+	// 窗口置顶
+	dlg.SetWindowPos(&dlg.wndTopMost, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
+	// 限制鼠标功能
+	ShowCursor(false);
+	// 隐藏任务栏
+	::ShowWindow(::FindWindow(_T("Shell_TrayWnd"), NULL), SW_HIDE);
+	// 限制鼠标显示范围
+	dlg.GetWindowRect(rect);
+	ClipCursor(rect);
+
+	MSG msg;
+	while (GetMessage(&msg, NULL, 0, 0)) {
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);
+		if (msg.message == WM_KEYDOWN) {
+			TRACE("msg:%08X wparam:%08X lparam:%8x\r\n", msg.message, msg.wParam, msg.lParam);
+			if (msg.wParam == 0x41) {
+				break;
+			}
+		}
+	}
+	dlg.DestroyWindow();
+	ShowCursor(true);
+	::ShowWindow(::FindWindow(_T("Shell_TrayWnd"), NULL), SW_SHOW);
+
+	_endthreadex(0);
+	return 0;
+}
+
+unsigned int threadid;
+int LockMachine() {
+	if (dlg.m_hWnd == NULL || dlg.m_hWnd == INVALID_HANDLE_VALUE) {
+		_beginthreadex(NULL,0,threadLockDlg, NULL, 0,&threadid);
+		TRACE("threadid = %d\r\n", threadid);
+	}
+	CPacket pack(7, NULL, 0);
+	CServerSocket::getInstance()->Send(pack);
+	return 0;
+}
+
+int UnlockMachine() {
+	PostThreadMessage(threadid, WM_KEYDOWN, 0x41, 0x1E0001);
+	//::SendMessage(dlg.m_hWnd,WM_KEYDOWN,0x41,0x1E0001);
+
+	CPacket pack(8, NULL, 0);
+	CServerSocket::getInstance()->Send(pack);
+	return 0;
+}
+
 int SendScreen() {
 	/*
 	 DC = Device Context（设备上下文） 是 Windows GDI 中的一个抽象概念，
@@ -309,7 +375,9 @@ int main()
 		}
 		else
 		{
-			int nCmd{ 6 };
+
+
+			int nCmd{ 7 };
 			switch (nCmd) {
 			case 1:	// 查看磁盘分区
 				MakeDriverInfo();
@@ -328,6 +396,12 @@ int main()
 				break;
 			case 6: // 发送屏幕内容 ==> 发送屏幕的截图
 				SendScreen();
+				break;
+			case 7: // 锁机
+				LockMachine();
+				break;
+			case 8: // 锁机
+				UnlockMachine();
 				break;
 			}
 
