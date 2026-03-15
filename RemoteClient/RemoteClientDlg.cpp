@@ -4,6 +4,7 @@
 
 #include "pch.h"
 #include "framework.h"
+#include "ClientSocket.h"
 #include "RemoteClient.h"
 #include "RemoteClientDlg.h"
 #include "afxdialogex.h"
@@ -20,15 +21,15 @@ class CAboutDlg : public CDialogEx
 public:
 	CAboutDlg();
 
-// Dialog Data
+	// Dialog Data
 #ifdef AFX_DESIGN_TIME
 	enum { IDD = IDD_ABOUTBOX };
 #endif
 
-	protected:
+protected:
 	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV support
 
-// Implementation
+	// Implementation
 protected:
 	DECLARE_MESSAGE_MAP()
 };
@@ -52,6 +53,8 @@ END_MESSAGE_MAP()
 
 CRemoteClientDlg::CRemoteClientDlg(CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_REMOTECLIENT_DIALOG, pParent)
+	, m_server_address(0)
+	, m_nPort(_T(""))
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -59,12 +62,39 @@ CRemoteClientDlg::CRemoteClientDlg(CWnd* pParent /*=nullptr*/)
 void CRemoteClientDlg::DoDataExchange(CDataExchange* pDX)
 {
 	CDialogEx::DoDataExchange(pDX);
+	DDX_IPAddress(pDX, IDC_IPADDRESS_SERVER, m_server_address);
+	DDX_Text(pDX, IDC_EDIT_PORT, m_nPort);
+	DDX_Control(pDX, IDC_TREE_DIR, m_Tree);
+}
+
+int CRemoteClientDlg::SendCommandPacket(int nCmd, BYTE* pData, size_t nLength)
+{
+	UpdateData();
+
+	CClientSocket* pClient{ CClientSocket::getInstance() };
+	BOOL ret{ pClient->InitSocket(m_server_address,atoi((LPCTSTR)m_nPort)) };
+	if (!ret) {
+		AfxMessageBox("ÍøÂç³õÊ¼»¯Ê§°Ü!");
+		return -1;
+	}
+
+	CPacket pack(nCmd, pData, nLength);
+	int res{ pClient->Send(pack) };
+	TRACE("Send ret:%d\r\n", res);
+
+	int cmd = pClient->DealCommand();
+	TRACE("ack:%d\r\n", cmd);
+	pClient->CloseSocket();
+
+	return cmd;
 }
 
 BEGIN_MESSAGE_MAP(CRemoteClientDlg, CDialogEx)
 	ON_WM_SYSCOMMAND()
 	ON_WM_PAINT()
 	ON_WM_QUERYDRAGICON()
+	ON_BN_CLICKED(IDC_BTN_TEST, &CRemoteClientDlg::OnBnClickedBtnTest)
+	ON_BN_CLICKED(IDC_BTN_FILEINFO, &CRemoteClientDlg::OnBnClickedBtnFileinfo)
 END_MESSAGE_MAP()
 
 
@@ -100,6 +130,11 @@ BOOL CRemoteClientDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
 	// TODO: Add extra initialization here
+	UpdateData();
+	m_server_address = 0x7F000001;
+	m_nPort = _T("9527");
+	UpdateData(FALSE);
+
 
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
@@ -153,3 +188,33 @@ HCURSOR CRemoteClientDlg::OnQueryDragIcon()
 	return static_cast<HCURSOR>(m_hIcon);
 }
 
+void CRemoteClientDlg::OnBnClickedBtnTest() {
+	SendCommandPacket(1981);
+}
+
+void CRemoteClientDlg::OnBnClickedBtnFileinfo()
+{
+	int ret = SendCommandPacket(1);
+	if (ret == -1) {
+		AfxMessageBox(_T("ÃüÁî´¦ÀíÊ§°Ü£¡£¡£¡"));
+		return;
+	}
+	CClientSocket* pClient{ CClientSocket::getInstance() };
+	std::string drivers{ pClient->GetPacket().strData };
+	std::string dr;
+	m_Tree.DeleteAllItems();
+	for (size_t i{ 0 }; i < drivers.size(); ++i) {
+		if (drivers[i] == ',') {
+			dr += ":";
+			m_Tree.InsertItem(dr.c_str(), TVI_ROOT, TVI_LAST);
+			dr.clear();
+			continue;
+		}
+		dr += drivers[i];
+		if (i == drivers.size() - 1) {
+			dr += ":";
+			m_Tree.InsertItem(dr.c_str(), TVI_ROOT, TVI_LAST);
+			dr.clear();
+		}
+	}
+}

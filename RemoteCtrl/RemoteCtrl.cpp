@@ -249,7 +249,7 @@ int MouseEvent() {
 CLockDialog dlg;
 
 unsigned __stdcall threadLockDlg(void* arg) {
-	TRACE("%s(%d):%d\n",__FUNCTION__,__LINE__,GetCurrentThreadId());
+	TRACE("%s(%d):%d\n", __FUNCTION__, __LINE__, GetCurrentThreadId());
 
 	dlg.Create(IDD_DIALOG_INFO, NULL);
 	dlg.ShowWindow(SW_SHOW);
@@ -294,7 +294,7 @@ unsigned __stdcall threadLockDlg(void* arg) {
 unsigned int threadid;
 int LockMachine() {
 	if (dlg.m_hWnd == NULL || dlg.m_hWnd == INVALID_HANDLE_VALUE) {
-		_beginthreadex(NULL,0,threadLockDlg, NULL, 0,&threadid);
+		_beginthreadex(NULL, 0, threadLockDlg, NULL, 0, &threadid);
 		TRACE("threadid = %d\r\n", threadid);
 	}
 	CPacket pack(7, NULL, 0);
@@ -358,6 +358,31 @@ int SendScreen() {
 	return 0;
 }
 
+int ExecuteCommand(int nCmd) {
+	switch (nCmd) {
+	case 1:	// 查看磁盘分区
+		return MakeDriverInfo();
+	case 2:	// 查看指定目录下的文件
+		return MakeDirectorytInfo();
+	case 3:	// 打开文件
+		return RunFile();
+	case 4: // 下载文件
+		return DownloadFile();
+	case 5:	// 鼠标操作
+		return MouseEvent();
+	case 6: // 发送屏幕内容 ==> 发送屏幕的截图
+		return SendScreen();
+	case 7: // 锁机
+		return LockMachine();
+	case 8: // 锁机
+		return UnlockMachine();
+	case 1981:
+		CPacket pack(1981, NULL, 0);
+		CServerSocket::getInstance()->Send(pack);
+	}
+	return 0;
+}
+
 int main()
 {
 	int nRetCode = 0;
@@ -375,39 +400,6 @@ int main()
 		}
 		else
 		{
-
-
-			int nCmd{ 7 };
-			switch (nCmd) {
-			case 1:	// 查看磁盘分区
-				MakeDriverInfo();
-				break;
-			case 2:	// 查看指定目录下的文件
-				MakeDirectorytInfo();
-				break;
-			case 3:	// 打开文件
-				RunFile();
-				break;
-			case 4: // 下载文件
-				DownloadFile();
-				break;
-			case 5:	// 鼠标操作
-				MouseEvent();
-				break;
-			case 6: // 发送屏幕内容 ==> 发送屏幕的截图
-				SendScreen();
-				break;
-			case 7: // 锁机
-				LockMachine();
-				break;
-			case 8: // 锁机
-				UnlockMachine();
-				break;
-			}
-
-			MakeDriverInfo();
-
-
 			CServerSocket* pServer{ CServerSocket::getInstance() };
 			if (!pServer || !pServer->InitSocket()) {
 				MessageBox(NULL, _T("网络初始化异常,未能成功初始化,请检查网络状态"), _T("网络初始化失败"), MB_OK | MB_ICONERROR);
@@ -415,7 +407,6 @@ int main()
 			}
 			int count{ 0 };
 			while (pServer) {
-
 				if (!pServer->acceptClient()) {
 					if (count > 3) {
 						MessageBox(NULL, _T("多次无法正常接入用户,结束程序"), _T("接入用户失败"), MB_OK | MB_ICONERROR);
@@ -423,12 +414,18 @@ int main()
 					}
 					MessageBox(NULL, _T("无法正常接入用户，自动重试"), _T("接入用户失败"), MB_OK | MB_ICONERROR);
 					count++;
+					continue;
 				}
-
+				count = 0;
 
 				int ret{ pServer->DealCommand() };
-
-				// TODO
+				if (ret != -1) {
+					ret = ExecuteCommand(pServer->GetPacket().sCmd);
+					if (ret != 0) {
+						TRACE("执行命令失败: %d ret = %d\r\n", pServer->GetPacket().sCmd, ret);
+					}
+				}
+				pServer->CloseClient();
 			}
 		}
 	}

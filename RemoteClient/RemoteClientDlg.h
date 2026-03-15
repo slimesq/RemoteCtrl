@@ -19,7 +19,8 @@ public:
 
 	protected:
 	virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV support
-
+private:
+	int SendCommandPacket(int nCmd, BYTE* pData = NULL, size_t nLength = 0);
 
 // Implementation
 protected:
@@ -31,4 +32,12 @@ protected:
 	afx_msg void OnPaint();
 	afx_msg HCURSOR OnQueryDragIcon();
 	DECLARE_MESSAGE_MAP()
+public:
+	afx_msg void OnBnClickedBtnTest();
+	afx_msg void OnEnChangeEdit1();
+	afx_msg void OnIpnFieldchangedIpaddress1(NMHDR* pNMHDR, LRESULT* pResult);
+	DWORD m_server_address;
+	CString m_nPort;
+	afx_msg void OnBnClickedBtnFileinfo();
+	CTreeCtrl m_Tree;
 };
