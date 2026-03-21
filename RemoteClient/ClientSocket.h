@@ -7,6 +7,21 @@
 
 #define BUFFER_SIZE 4096
 
+typedef struct file_info {
+	file_info() {
+		IsInvaild = FALSE;
+		IsDirectory = FALSE;
+		HasNext = TRUE;
+		memset(szFileName, 0, sizeof(szFileName));
+	}
+
+	BOOL IsInvaild;		// 是否有效
+	BOOL IsDirectory;	// 是否为目录 0 否 1 是
+	BOOL HasNext;		// 是否还有后续 0 没有 1 有
+	char szFileName[256]; // 文件名
+}FILEINFO, * PFILEINFO;
+
+
 class CPacket {
 public:
 	CPacket() :sHead{ 0 }, nLength{ 0 }, sCmd{ 0 }, sSum{ 0 } {}
@@ -175,21 +190,24 @@ public:
 
 	int DealCommand() {
 		char* buffer = m_buffer.data();
-		memset(buffer, 0, BUFFER_SIZE);
-		size_t index{ 0 };
 		while (true) {
-			size_t len{ static_cast<size_t>(recv(m_sock,buffer + index,BUFFER_SIZE - index,0)) };
-			if (len <= 0) {
-				return -1;
-			}
-			index += len;
-			size_t consumed = index;
+			// 先尝试解析缓冲区已有的数据，不能先调 recv：
+			// 服务端发完所有包后会立即关闭连接，若一次 recv 带来多个包，
+			// 第一个包消费后缓冲区仍有剩余包，若先调 recv 则因连接已
+			// 关闭返回 0，导致剩余包全部丢失。必须先解析缓冲区，解析
+			// 不到完整包时才调 recv 继续接收数据。
+			size_t consumed = m_bufIndex;
 			m_packet = CPacket{ (BYTE*)buffer, consumed };
 			if (consumed > 0) {
 				memmove(buffer, buffer + consumed, BUFFER_SIZE - consumed);
-				index -= consumed;
+				m_bufIndex -= consumed;
 				return m_packet.sCmd;
 			}
+			size_t len{ static_cast<size_t>(recv(m_sock,buffer + m_bufIndex,BUFFER_SIZE - m_bufIndex,0)) };
+			if (len <= 0) {
+				return -1;
+			}
+			m_bufIndex += len;
 		}
 		return -1;
 	}
@@ -227,6 +245,7 @@ public:
 	void CloseSocket() {
 		closesocket(m_sock);
 		m_sock = INVALID_SOCKET;
+		m_bufIndex = 0;
 	}
 
 private:
@@ -269,6 +288,10 @@ private:
 private:
 	std::vector<char> m_buffer;
 	SOCKET m_sock;
+	// 记录缓冲区中已接收但未解析的字节数，跨调用保持。
+	// TCP 可能将多个包合并在一次 recv 中返回，用此变量
+	// 追踪剩余数据，防止下次调用时遗漏已收到的包。
+	size_t m_bufIndex{ 0 };
 	CPacket m_packet{};
 	static CClientSocket* m_instance;
 private:
