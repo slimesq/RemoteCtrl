@@ -6,6 +6,7 @@
 #include "framework.h"
 #include "RemoteClient.h"
 #include "RemoteClientDlg.h"
+#include "ClientController.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -71,9 +72,10 @@ BOOL CRemoteClientApp::InitInstance()
 	// such as the name of your company or organization
 	SetRegistryKey(_T("Local AppWizard-Generated Applications"));
 
-	CRemoteClientDlg dlg;
-	m_pMainWnd = &dlg;
-	INT_PTR nResponse = dlg.DoModal();
+	CClientController* controller{CClientController::getInstance()};
+	controller->InitController();
+	INT_PTR nResponse = controller->Invoke(m_pMainWnd);
+
 	if (nResponse == IDOK)
 	{
 		// TODO: Place code here to handle when the dialog is

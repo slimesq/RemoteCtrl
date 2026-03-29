@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <socketapi.h>
+#include "ClientController.h"
 
 #define BUFFER_SIZE 4096
 
@@ -165,7 +166,7 @@ public:
 			m_instance = new CClientSocket;
 			return m_instance;
 		}
-	};
+	}
 
 	BOOL InitSocket(int nIP,int nPort) {
 		if (m_sock != INVALID_SOCKET) CloseSocket();

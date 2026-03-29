@@ -6,7 +6,7 @@
 #include "framework.h"
 #include "ClientSocket.h"
 #include "RemoteClient.h"
-#include "RemoteClientDlg.h"
+#include "ClientController.h"
 #include "afxdialogex.h"
 #include "StatusDlg.h"
 #include "WatchDialog.h"
