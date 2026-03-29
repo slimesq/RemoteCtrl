@@ -188,22 +188,81 @@ public:
 		return TRUE;
 	}
 
+	// Silent connect for background threads (no AfxMessageBox on failure)
+	BOOL TryConnect(int nIP, int nPort) {
+		if (m_sock != INVALID_SOCKET) CloseSocket();
+		m_sock = socket(PF_INET, SOCK_STREAM, 0);
+		sockaddr_in cli_addr;
+		memset(&cli_addr, 0, sizeof(cli_addr));
+		cli_addr.sin_family = AF_INET;
+		cli_addr.sin_addr.s_addr = htonl(nIP);
+		cli_addr.sin_port = htons(nPort);
+		if (connect(m_sock, (sockaddr*)&cli_addr, sizeof(cli_addr)) == -1) {
+			CloseSocket();
+			return FALSE;
+		}
+		return TRUE;
+	}
+
 	int DealCommand() {
 		char* buffer = m_buffer.data();
 		while (true) {
-			// 先尝试解析缓冲区已有的数据，不能先调 recv：
-			// 服务端发完所有包后会立即关闭连接，若一次 recv 带来多个包，
-			// 第一个包消费后缓冲区仍有剩余包，若先调 recv 则因连接已
-			// 关闭返回 0，导致剩余包全部丢失。必须先解析缓冲区，解析
-			// 不到完整包时才调 recv 继续接收数据。
+			// -- 第一步：预读包头，按实际包长提前扩容缓冲区 --
+			// 协议包结构（字节顺序）：
+			//   sHead  (2B)  固定 0xFEFF，包起始标识
+			//   nLength(4B)  sCmd + Data + sSum 的合计字节数
+			//   sCmd  (2B)  命令码
+			//   Data  (nLength-4 B)  负载内容
+			//   sSum  (2B)  校验和
+			//
+			// 为什么要先扩容再解析，而不是等 recv 自然填满？
+			//   缓冲区初始只有 4096B，截图等大包动辄几百 KB。若不提前扩容，会同时触发两个问题：
+			//   (1) CPacket 构造因数据不完整持续返回 consumed=0，无法解析出包
+			//   (2) recv 因缓冲区已满、可写空间为 0，无法再接收新数据
+			//   两者叠加，DealCommand 陷入死循环或误判为连接断开，返回 -1
+			//
+			// 做法：若缓冲区已有不少于 6 字节（足以读出 sHead 和 nLength），
+			//   则扫描找到 0xFEFF，读出 nLength，
+			//   计算完整包总字节数 = 0xFEFF偏移 + 2(sHead) + 4(nLength字段) + nLength，
+			//   若超出当前缓冲区容量，立即 resize，确保后续 recv 能把整包数据收纳完毕。
+			if (m_bufIndex >= 6) {
+				for (size_t i = 0; i + 6 <= m_bufIndex; i++) {
+					if (*(WORD*)(buffer + i) == 0xFEFF) {
+						DWORD nLen = *(DWORD*)(buffer + i + 2);
+						size_t needed = i + 2 + 4 + (size_t)nLen;
+						if (needed > m_buffer.size()) {
+							m_buffer.resize(needed + 1024);
+							buffer = m_buffer.data();
+						}
+						break;
+					}
+				}
+			}
+			// -- 第二步：尝试从缓冲区解析一个完整包 --
+			// CPacket(BYTE* pData, size_t& nSize) 在 pData[0..nSize-1] 中寻找并解析包，以传引用的方式改写 nSize：
+			//   解析成功 -> nSize 改为本包消耗的字节数（>0），解析结果存入 m_packet
+			//   数据不足 -> nSize 改为 0，表示包还没收完，需要继续 recv
+			// consumed 接收改写后的 nSize，是后续判断解析是否成功的依据。
 			size_t consumed = m_bufIndex;
 			m_packet = CPacket{ (BYTE*)buffer, consumed };
+			// 解析成功：将剩余未处理的字节前移至缓冲区头部，更新 m_bufIndex，返回命令码。
+			// memmove 不可省略：DealCommand 是有状态的，下次被调用时 recv 从 buffer[m_bufIndex] 处续写；
+			// 若不前移，已消耗区域和新写入区域之间会产生空洞，导致下一个包解析错位。
 			if (consumed > 0) {
-				memmove(buffer, buffer + consumed, BUFFER_SIZE - consumed);
+				memmove(buffer, buffer + consumed, m_bufIndex - consumed);
 				m_bufIndex -= consumed;
 				return m_packet.sCmd;
 			}
-			size_t len{ static_cast<size_t>(recv(m_sock,buffer + m_bufIndex,BUFFER_SIZE - m_bufIndex,0)) };
+			// -- 第三步：数据不足，调用 recv 等待更多数据 --
+			// 正常情况下第一步已按包长扩容，缓冲区不应在整包收齐前就满。
+			// 此处是安全兜底：若缓冲区满了且仍未解析成功（如包头字节尚未收完），则翻倍扩容，保证 recv 有可写空间。
+			if (m_bufIndex >= m_buffer.size()) {
+				m_buffer.resize(m_buffer.size() * 2);
+				buffer = m_buffer.data();
+			}
+			size_t len{ static_cast<size_t>(recv(m_sock,buffer + m_bufIndex,m_buffer.size() - m_bufIndex,0)) };
+			// recv 将新数据追加到 buffer[m_bufIndex] 处，m_bufIndex 更新后回到循环顶部重新执行第一、二步。
+			// recv 返回 0 或负数：连接断开或出错，返回 -1 通知调用方失败。
 			if (len <= 0) {
 				return -1;
 			}
@@ -246,6 +305,7 @@ public:
 		closesocket(m_sock);
 		m_sock = INVALID_SOCKET;
 		m_bufIndex = 0;
+		m_buffer.resize(BUFFER_SIZE);
 	}
 
 private:

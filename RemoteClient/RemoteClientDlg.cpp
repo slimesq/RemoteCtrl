@@ -8,6 +8,8 @@
 #include "RemoteClient.h"
 #include "RemoteClientDlg.h"
 #include "afxdialogex.h"
+#include "StatusDlg.h"
+#include "WatchDialog.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -105,6 +107,9 @@ BEGIN_MESSAGE_MAP(CRemoteClientDlg, CDialogEx)
 	ON_COMMAND(ID_DOWNLOAD_FILE, &CRemoteClientDlg::OnDownloadFile)
 	ON_COMMAND(ID_DELETE_FILE, &CRemoteClientDlg::OnDeleteFile)
 	ON_COMMAND(ID_RUN_FILE, &CRemoteClientDlg::OnRunFile)
+	ON_MESSAGE(WM_SEND_PACKET, &CRemoteClientDlg::OnSendPacket)
+	ON_BN_CLICKED(IDC_BTN_START_WATCH, &CRemoteClientDlg::OnBnClickedBtnStartWatch)
+	ON_WM_TIMER()
 END_MESSAGE_MAP()
 
 
@@ -145,6 +150,9 @@ BOOL CRemoteClientDlg::OnInitDialog()
 	m_nPort = _T("9527");
 	UpdateData(FALSE);
 
+	m_dlgStatus.Create(IDD_DLG_STA, this);
+	m_dlgStatus.ShowWindow(SW_HIDE);
+	m_isFull = false;
 
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
@@ -366,51 +374,58 @@ void CRemoteClientDlg::OnNMRClickListFile(NMHDR* pNMHDR, LRESULT* pResult)
 	}
 }
 
-void CRemoteClientDlg::OnDownloadFile()
+void CRemoteClientDlg::threadEntryForDownFile(void* arg)
+{
+	CRemoteClientDlg* thiz = (CRemoteClientDlg*)arg;
+	thiz->threadDownFile();
+	_endthread();
+}
+
+void CRemoteClientDlg::threadDownFile()
 {
 	int nListSelected = m_List.GetSelectionMark();
-	if (nListSelected < 0) return; // 没有选中任何文件
+	if (nListSelected < 0) return;
 	CString strFile = m_List.GetItemText(nListSelected, 0);
 
 	CFileDialog dlg(FALSE, "*", m_List.GetItemText(nListSelected, 0), OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, NULL, this);
 	if (dlg.DoModal() == IDOK) {
 		FILE* pFile = fopen(dlg.GetPathName(), "wb+");
 		if (pFile == NULL) {
-			AfxMessageBox("本地没有权限保存该文件,或者文件无法创建！！！");
+			AfxMessageBox("允行没有权限保存文件,该文件无法保存，请重试");
+			m_dlgStatus.ShowWindow(SW_HIDE);
+			EndWaitCursor();
 			return;
 		}
 
 		CClientSocket* pClient = CClientSocket::getInstance();
 
 		do {
-			// 树控件无选中节点，无法构造路径；以 break 替前退出块，认证 fclose 正常支行
-			// 使用 m_hCurrentDir 执树点专时电揍的目录，防止 GetSelectedItem() 在 file dialog 后可能返回 NULL
 			HTREEITEM hSelected = m_hCurrentDir;
-			if (hSelected == NULL) break; // 树控件无选中节点，无法构造路径
+			if (hSelected == NULL) break;
 			strFile = GetPath(hSelected) + strFile;
 			TRACE("%s\r\n", LPCSTR(strFile));
 
-			int ret = SendCommandPacket(4, false, (BYTE*)(LPCSTR)strFile, strFile.GetLength());
+			//int ret = SendCommandPacket(4, false, (BYTE*)(LPCSTR)strFile, strFile.GetLength());
+			int ret = SendMessage(WM_SEND_PACKET, 4 << 1 | 0, (LPARAM)(LPCSTR)strFile);
 			if (ret < 0) {
-				AfxMessageBox("执行下载命令失败！！");
-				TRACE("执行下载命令失败: ret = %d\r\n", ret);
+				AfxMessageBox("执行命令失败，请重试");
+				TRACE("执行命令失败: ret = %d\r\n", ret);
 				break;
 			}
 
 			long long nLength = *(long long*)pClient->GetPacket().strData.c_str();
 			TRACE("nLength = %lld, strData.size = %zu\r\n", nLength, pClient->GetPacket().strData.size());
 			if (nLength == 0) {
-				AfxMessageBox("文件长度为零或者无法读取文件！！！");
+				AfxMessageBox("文件长度为0，无法获取文件，请重试");
 				break;
 			}
-
 			long long nCount = 0;
 			while (nCount < nLength) {
 				ret = pClient->DealCommand();
 				TRACE("chunk cmd=%d size=%zu nCount=%lld\r\n", ret, pClient->GetPacket().strData.size(), nCount);
 				if (ret < 0) {
-					AfxMessageBox("传输失败！！！");
-					TRACE("传输失败: ret = %d\r\n", ret);
+					AfxMessageBox("下载失败，请重试");
+					TRACE("下载失败: ret = %d\r\n", ret);
 					break;
 				}
 				fwrite(pClient->GetPacket().strData.c_str(), 1, pClient->GetPacket().strData.size(), pFile);
@@ -420,8 +435,19 @@ void CRemoteClientDlg::OnDownloadFile()
 		fclose(pFile);
 		pClient->CloseSocket();
 	}
+	m_dlgStatus.ShowWindow(SW_HIDE);
+	EndWaitCursor();
+	MessageBox(_T("下载完成"));
+}
 
-
+void CRemoteClientDlg::OnDownloadFile()
+{
+	_beginthread(CRemoteClientDlg::threadEntryForDownFile, 0, this);
+	BeginWaitCursor();
+	m_dlgStatus.m_info.SetWindowText(_T("命令正在执行中"));
+	m_dlgStatus.ShowWindow(SW_SHOW);
+	m_dlgStatus.CenterWindow(this);
+	m_dlgStatus.SetActiveWindow();
 }
 
 void CRemoteClientDlg::OnDeleteFile()
@@ -449,4 +475,94 @@ void CRemoteClientDlg::OnRunFile()
 	if (ret < 0) {
 		AfxMessageBox("打开文件命令执行失败！！！");
 	}
+}
+
+void CRemoteClientDlg::threadEntryForWatchData(void* arg)
+{
+	CRemoteClientDlg* thiz = (CRemoteClientDlg*)arg;
+	thiz->threadWatchData();
+	_endthread();
+}
+
+void CRemoteClientDlg::threadWatchData()
+{
+	CClientSocket* pClinet = CClientSocket::getInstance();
+	ULONGLONG tick = GetTickCount64();
+
+	for (;;) {
+		if (m_stopWatch) break;
+		ULONGLONG elapsed = GetTickCount64() - tick;
+		if (elapsed < 50) {
+			Sleep((DWORD)(50 - elapsed));
+		}
+		tick = GetTickCount64();
+
+		if (!pClinet->TryConnect((int)m_server_address, atoi((LPCTSTR)m_nPort))) {
+			Sleep(100);
+			continue;
+		}
+		CPacket watchPack(6, NULL, 0);
+		pClinet->Send(watchPack);
+		int ret = pClinet->DealCommand();
+		if (ret == 6) {
+				if (m_isFull == false) {
+					BYTE* pData = (BYTE*)pClinet->GetPacket().strData.c_str();
+					HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, 0);
+					if (hMem == NULL) { Sleep(1); continue; }
+					IStream* pStream = NULL;
+					HRESULT hRet = CreateStreamOnHGlobal(hMem, TRUE, &pStream);
+					if (hRet == S_OK) {
+						ULONG length = 0;
+						pStream->Write(pData, pClinet->GetPacket().strData.size(), &length);
+						LARGE_INTEGER bg = { 0 };
+						pStream->Seek(bg, STREAM_SEEK_SET, NULL);
+						if ((HBITMAP)m_image != NULL) m_image.Destroy();
+						m_image.Load(pStream);
+						m_remoteWidth  = m_image.GetWidth();
+						m_remoteHeight = m_image.GetHeight();
+						m_isFull = true;
+						pStream->Release();
+					}
+				}
+		}
+		pClinet->CloseSocket();
+	}
+}
+
+LRESULT CRemoteClientDlg::OnSendPacket(WPARAM wParam, LPARAM lParam)
+{
+	int ret = 0;
+	int cmd = wParam >> 1;
+	switch (cmd) {
+	case 4: {
+		CString strFile = (LPCSTR)lParam;
+		int ret = SendCommandPacket(cmd, wParam & 1, (BYTE*)(LPCSTR)strFile, strFile.GetLength());
+	}
+		  break;
+	case 6:
+	case 7:
+	case 8:
+		ret = SendCommandPacket(cmd, wParam & 1, NULL, 0);
+		break;
+	default:
+		ret = -1;
+	}
+	return ret;
+}
+
+void CRemoteClientDlg::OnBnClickedBtnStartWatch()
+{
+	CWatchDialog dlg;
+	m_stopWatch = false;
+	_beginthread(CRemoteClientDlg::threadEntryForWatchData, 0, this);
+	GetDlgItem(IDC_BTN_START_WATCH)->EnableWindow(FALSE);
+	dlg.DoModal();
+	m_stopWatch = true;
+	Sleep(200);
+	GetDlgItem(IDC_BTN_START_WATCH)->EnableWindow(TRUE);
+}
+
+void CRemoteClientDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	CDialogEx::OnTimer(nIDEvent);
 }
